@@ -289,5 +289,7 @@
     "input": 20303,
     "output": 5358,
     "reasoning": 7736
-  }
+  },
+  "filingStatusWant": "married_filing_jointly",
+  "filingStatusGot": "married_filing_jointly"
 }
