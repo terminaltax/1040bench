@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "simulatedTaxpayer": "Claude Haiku through Claude Code (alias haiku, run as a fresh install)",
   "agents": {
     "codex": {
