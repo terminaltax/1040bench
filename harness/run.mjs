@@ -25,7 +25,7 @@ const FORMAT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "RE
 const jsonLines = (stdout) => stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
 // Parsers: one CLI turn's JSON stream -> { text, session, events }.
-const PARSE = {
+export const PARSE = {
   "claude-code": (stdout) => {
     const lines = jsonLines(stdout);
     const events = [], byId = {};
@@ -103,18 +103,33 @@ const PARSE = {
     const texts = events.filter((e) => e.kind === "text");
     return { text: texts.at(-1)?.output ?? "", session, events, usage };
   },
-  // Grok CLI (`--output-format streaming-json`): records carry a type; assistant text and tool calls are kept.
+  // Grok CLI (`--output-format streaming-json`, ~/.grok/docs/user-guide/14-headless-mode.md): `text` chunks in `data`;
+  // `tool_call` names the tool (`toolName`) and its `rawInput`; `tool_call_update` carries the result (`rawOutput`) under
+  // the same `toolCallId`; `end` closes the turn with `sessionId` and `usage`; `error` carries `message`.
   grok: (stdout) => {
-    const events = [];
-    let session, text = "";
+    const events = [], calls = new Map(), segments = [];
+    let session, chunk = "", usage;
+    const str = (v) => (typeof v === "string" ? v : JSON.stringify(v ?? {}));
+    const flush = () => { if (chunk) { segments.push(chunk); events.push({ kind: "text", output: chunk }); } chunk = ""; };
     for (const rec of jsonLines(stdout)) {
-      session ??= rec.session_id ?? rec.sessionId;
-      if (rec.type === "available_commands") continue;
-      if (typeof rec.text === "string" && /assistant|message|text/.test(String(rec.type))) events.push({ kind: "text", output: rec.text });
-      else if (/tool/.test(String(rec.type))) events.push({ kind: "tool", name: rec.name ?? rec.tool ?? "tool", input: JSON.stringify(rec.input ?? rec.args ?? {}), output: typeof rec.output === "string" ? rec.output : JSON.stringify(rec.output ?? rec.result ?? "") });
-      if (rec.type === "result" || rec.type === "final") text = rec.text ?? rec.result ?? text;
+      session ??= rec.sessionId ?? rec.session_id;
+      if (rec.type === "text") chunk += rec.data ?? "";
+      else if (rec.type === "tool_call") {
+        flush();
+        let ev = calls.get(rec.toolCallId);
+        if (!ev) { ev = { kind: "tool", name: rec.toolName ?? rec.title ?? "tool", input: "", output: "" }; calls.set(rec.toolCallId, ev); events.push(ev); }
+        if (rec.rawInput !== undefined) ev.input = str(rec.rawInput);
+      } else if (rec.type === "tool_call_update") {
+        const ev = calls.get(rec.toolCallId);
+        if (!ev) continue;
+        if (rec.rawInput !== undefined) ev.input = str(rec.rawInput);
+        const out = rec.rawOutput;
+        if (out != null) ev.output = typeof out.output_for_prompt === "string" ? out.output_for_prompt : str(out);
+      } else if (rec.type === "end") { flush(); usage = rec.usage; }
+      else if (rec.type === "error") { flush(); events.push({ kind: "error", output: rec.message ?? str(rec) }); }
     }
-    return { text: text || events.filter((e) => e.kind === "text").map((e) => e.output).join("\n"), session, events };
+    flush();
+    return { text: segments.join("\n"), session, events, usage };
   },
 };
 // OpenRouter models run inside Codex CLI (incog's openrouter agent), so their stream is Codex's.
